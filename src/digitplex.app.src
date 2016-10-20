@@ -1,0 +1,12 @@
+{application, digitplex,
+ [
+  {description, ""},
+  {vsn, "1"},
+  {registered, []},
+  {applications, [
+                  kernel,
+                  stdlib
+                 ]},
+  {mod, { digitplex_app, []}},
+  {env, []}
+ ]}.
