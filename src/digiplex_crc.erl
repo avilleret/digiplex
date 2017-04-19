@@ -8,15 +8,12 @@
 -module(digiplex_crc).
 -compile(export_all).
 
-checksum(Data) when is_binary(Data) ->
-    update_bin(0, Data, 0).
+checksum(Bin) ->
+    checksum_bin(0, Bin).
 
-checksum(Data,Pad) when is_binary(Data) ->
-    update_bin(0,Data,Pad).
-
-update_bin(Crc, <<Val,Bin/binary>>, Pad) ->
-    update_bin(Crc+Val, Bin, Pad);
-update_bin(Crc, <<>>, _I) ->
+checksum_bin(Crc, <<Val,Bin/binary>>) ->
+    checksum_bin(Crc+Val, Bin);
+checksum_bin(Crc, <<>>) ->
     Crc band 16#ff.
 
 test1() ->

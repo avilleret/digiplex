@@ -22,7 +22,6 @@
 
 -define(DIGIPLEX_ENDUSER_TYPE, 16#55).
 
-
 -record(digiplex_init,
 	{ 
 	  address=0, 
@@ -43,9 +42,31 @@
 	  section_data
 	}).
 
+-record(digiplex_login,
+	{ 
+	  message_center,
+	  answer,
+	  callback 
+	}).
+
 -record(digiplex_speed,
 	{
 	  speed=0
+	}).
+
+-record(digiplex_read,
+	{
+	  message_center,
+	  bus_address,
+	  address,
+	  data
+	}).
+
+-record(digiplex_read_command,
+	{
+	  offset,  %% 0 = 16 bytes, 5 bits 
+	  bus_address = 0,  %% 7 bits
+	  address  %% 16#8000 + addr = RAM, 16#0000 +addr = EEPROM
 	}).
 
 -record(digiplex_time,
@@ -75,6 +96,20 @@
 	  partition6,
 	  partition7,
 	  partition8
+	}).
+
+-record(digiplex_event,
+	{
+	  message_center,
+	  event_request_number,
+	  timestamp,
+	  event_group,
+	  partition1,     %% 4/8?
+	  partition2,     %% 4/8?
+	  event_number1, %% 8/integer 12?
+	  event_number2, %% 8/integer
+	  serial,        %% 32/integer
+	  event_data     %% 16/binary
 	}).
 
 -endif.
