@@ -1,0 +1,12 @@
+{application, digiplex,
+ [
+  {description, "Paradox digiplex protocol"},
+  {vsn, git},
+  {registered, []},
+  {applications, [
+                  kernel,
+                  stdlib
+                 ]},
+  {mod, { digitplex_app, []}},
+  {env, []}
+ ]}.
