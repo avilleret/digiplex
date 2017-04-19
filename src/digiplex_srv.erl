@@ -207,7 +207,7 @@ open(State = #state {device = DeviceName,
 	{ok,U} ->
 	    lager:debug("digiplex open: ~s@~w -> ~p", [DeviceName,Baud,U]),
 	    lager:debug("send init string", []),
-	    uarg:send(U, init_string()),
+	    uart:send(U, init_string()),
 	    {ok, State#state { uart=U, state=init }};
 	{error, E} when E =:= eaccess;
 			E =:= enoent ->
