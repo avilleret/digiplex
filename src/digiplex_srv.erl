@@ -127,7 +127,7 @@ init(Args0) ->
 		 baud = Baud,
 		 password = Password,
 		 reopen_ival = Reopen_ival,
-		 memory_map = <<0:512>>   %% empty memory map
+		 memory_map = <<0:512/unit:8>>   %% empty memory map
 	       },
     case open(S) of
 	{ok, S1} -> {ok,S1};
