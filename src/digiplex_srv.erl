@@ -12,6 +12,9 @@
 
 %% API
 -export([start_link/0]).
+-export([show_zone_info/0]).
+-export([get_info/0]).
+-export([read_event/1]).
 
 %% gen_server callbacks
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2,
@@ -21,7 +24,22 @@
 
 -include("digiplex.hrl").
 
--record(state, 
+%% info from init rsponse
+-record(info,
+	{
+	  product_id,
+	  software_version,
+	  software_revision,
+	  software_id,
+	  modem_speed,
+	  winload_type_id,
+	  memory_map_version,
+	  event_list_version,
+	  firware_build_version,
+	  module_serial_number
+	}).
+	  
+-record(state,
 	{
 	  state       :: undefined | init | login | up,
 	  device      :: string(),
@@ -29,15 +47,47 @@
 	  %% password: 4 bcd digits (hex, in 0-9 range)
 	  password    = 16#0000 :: integer(),
 	  attempt     = 0,
+	  info        :: #info{},
 	  reopen_ival = infinity :: non_neg_integer(),
 	  reopen_timer :: undefined | reference(),
 	  uart :: port(),
+	  memory_map :: binary(), %% data from 16#0 .. 16#1ff
+	  wait, %% {pdu_name, From, Data}
 	  buf=(<<>>)
 	}).
 
 %%%===================================================================
 %%% API
 %%%===================================================================
+
+show_zone_info() ->
+    {ok, MemoryMap} = gen_server:call(?SERVER, get_memory_map),
+    %% Digiplex 48?
+    <<_:16#152, ZoneBin:6/binary, TamperBin:6/binary,
+      _/binary>> = MemoryMap,
+    ZoneStatus = [I || <<I:1>> <= ZoneBin ],
+    TamperStatus = [I || <<I:1>> <= TamperBin ],
+    display_zone_info(1, ZoneStatus, TamperStatus).
+
+display_zone_info(I, [Z|Zs], [T|Ts]) ->
+    if Z =:= 0, T =:= 0 ->
+	    io:format("~2w: OK\n", [I]);
+       Z =:= 0, T =:= 1 ->
+	    io:format("~2w: Tamper\n", [I]);
+       Z =:= 1, T =:= 0 ->
+	    io:format("~2w: Open\n", [I]);
+       Z =:= 1, T =:= 1 ->
+	    io:format("~2w: FireLoop\n", [I])
+    end,
+    display_zone_info(I+1, Zs, Ts);
+display_zone_info(_I, [], []) ->
+    ok.
+
+get_info() ->
+    gen_server:call(?SERVER, get_info).
+
+read_event(N) ->
+    gen_server:call(?SERVER, {read_event,N}).
 
 %%--------------------------------------------------------------------
 %% @doc
@@ -76,7 +126,9 @@ init(Args0) ->
     S = #state { device = Device,
 		 baud = Baud,
 		 password = Password,
-		 reopen_ival = Reopen_ival },
+		 reopen_ival = Reopen_ival,
+		 memory_map = <<0:512>>   %% empty memory map
+	       },
     case open(S) of
 	{ok, S1} -> {ok,S1};
 	Error -> {stop, Error}
@@ -96,6 +148,31 @@ init(Args0) ->
 %%                                   {stop, Reason, State}
 %% @end
 %%--------------------------------------------------------------------
+
+handle_call(get_memory_map, _From, State) ->
+    {reply, {ok, State#state.memory_map}, State};
+handle_call(get_info, _From, State) ->
+    I = State#state.info,
+    L = [{product_id,I#info.product_id},
+	 {software_version,I#info.software_version},
+	 {software_revision,I#info.software_revision},
+	 {software_id,I#info.software_id},
+	 {modem_speed,I#info.modem_speed},
+	 {winload_type_id,I#info.winload_type_id},
+	 {memory_map_version,I#info.memory_map_version},
+	 {event_list_version,I#info.event_list_version},
+	 {firware_build_version,I#info.firware_build_version},
+	 {module_serial_number,I#info.module_serial_number}],
+    {reply, {ok,L}, State};
+handle_call({read_event, N}, From, State) ->
+    if State#state.state =/= up ->
+	    {reply, {error, not_running}, State};
+       true ->
+	    Pdu = #digiplex_event_req { event_request_number = N },
+	    send_pdu(Pdu, State),
+	    Pos = #digiplex_event_resp.event_request_number,
+	    {noreply, State#state { wait = {digiplex_event_resp,From,{Pos,N}}}}
+    end;
 handle_call(_Request, _From, State) ->
     lager:debug("got call ~p", [_Request]),
     {reply, {error,bad_call}, State}.
@@ -133,7 +210,8 @@ handle_info({uart,U,Data}, State) when U =:= State#state.uart ->
 		    try digiplex_codec:decode_pdu(Data1) of
 			Pdu ->
 			    State1 = State#state { buf=Buf1},
-			    handle_pdu(Pdu, State1)
+			    State2 = preprocess_pdu(Pdu, State1),
+			    handle_pdu(Pdu, State2)
 		    catch
 			error:Error ->
 			    lager:debug("panel data: ~p", [Data1]),
@@ -187,6 +265,22 @@ code_change(_OldVsn, State, _Extra) ->
 %%% Internal functions
 %%%===================================================================
 
+preprocess_pdu(Pdu = #digiplex_init { }, State) ->
+    set_info(Pdu, State);
+preprocess_pdu(Pdu=#digiplex_read_resp {}, State) ->
+    set_memory_map(Pdu, State);
+preprocess_pdu(Pdu, State) ->
+    case wait of
+	undefined -> State;
+	{PduName,From,{Pos,Value}} when 
+	      PduName =:= element(1,Pdu),
+	      Value =:= element(Pos,Pdu) ->
+	    gen_server:reply(From, {ok, Pdu}),
+	    State;
+	_ ->
+	    State
+    end.
+
 handle_pdu(Pdu = #digiplex_init { }, State) when State#state.state =:= init;
 						 State#state.state =:= login ->
     lager:debug("init pdu = ~p", [Pdu]),
@@ -201,28 +295,34 @@ handle_pdu(Pdu = #digiplex_init { }, State) when State#state.state =:= init;
 	    {noreply, State#state { state = login,
 				    attempt = State#state.attempt+1 }}
     end;
-handle_pdu(_Pdu=#digiplex_login {}, State) when State#state.state =:= login ->
+handle_pdu(_Pdu=#digiplex_login_resp {}, State)
+  when State#state.state =:= login ->
     lager:debug("login pdu = ~p", [_Pdu]),
     %% initiate read from 16#127
     lager:info("digiplex: read RAM 1",[]),
-    Pdu1 = #digiplex_read_command { offset=0,bus_address=0,address=16#8127 },
+    Pdu1 = #digiplex_read_req { count=32,bus_address=0,
+				address=?RAM(16#127) },
     send_pdu(Pdu1, State),
     {noreply, State#state { state = read1 }};
-handle_pdu(_Pdu=#digiplex_read {}, State) when State#state.state =:= read1 ->
-    lager:debug("data @ 0x127 = ~p", [_Pdu]),
+handle_pdu(_Pdu=#digiplex_read_resp {}, State)
+  when State#state.state =:= read1 ->
     %% read from 16#147
     lager:info("digiplex: read RAM 2",[]),
-    Pdu1 = #digiplex_read_command { offset=0,bus_address=0,address=16#8147 },
+    Pdu1 = #digiplex_read_req { count=32,bus_address=0,
+				address=?RAM(16#147) },
     send_pdu(Pdu1, State),
     {noreply, State#state { state = read2 }};
-handle_pdu(_Pdu=#digiplex_read {}, State) when State#state.state =:= read2 ->
+handle_pdu(_Pdu=#digiplex_read_resp {}, State) 
+  when State#state.state =:= read2 ->
     lager:debug("data @ 0x147 = ~p", [_Pdu]),
     %% read from 16#167
     lager:info("digiplex: read RAM 3",[]),
-    Pdu1 = #digiplex_read_command { offset=0,bus_address=0,address=16#8167 },
+    Pdu1 = #digiplex_read_req { count=32,bus_address=0,
+				address=?RAM(16#167) },
     send_pdu(Pdu1, State),
     {noreply, State#state { state = read3 }};
-handle_pdu(_Pdu = #digiplex_read {}, State) when State#state.state =:= read3 ->
+handle_pdu(_Pdu = #digiplex_read_resp {}, State) 
+  when State#state.state =:= read3 ->
     lager:debug("data @ 0x167 = ~p", [_Pdu]),
     lager:info("digiplex: up",[]),
     {noreply, State#state { state = up }};
@@ -236,6 +336,41 @@ send_pdu(Pdu, State) ->
     Data = digiplex_codec:add_checksum(Data0),
     lager:debug("send data = ~p", [Data]),
     uart:send(State#state.uart, Data).
+
+set_info(Pdu, State) ->
+    Info = #info { 
+	      product_id = Pdu#digiplex_init.product_id,
+	      software_version = Pdu#digiplex_init.software_version,
+	      software_revision  = Pdu#digiplex_init.software_revision,
+	      software_id  = Pdu#digiplex_init.software_id,
+	      modem_speed  = Pdu#digiplex_init.modem_speed,
+	      winload_type_id = Pdu#digiplex_init.winload_type_id,
+	      memory_map_version = Pdu#digiplex_init.memory_map_version,
+	      event_list_version = Pdu#digiplex_init.event_list_version,
+	      firware_build_version = Pdu#digiplex_init.firware_build_version,
+	      module_serial_number = Pdu#digiplex_init.module_serial_number
+	     },
+    State#state { info = Info }.
+
+%% insert RAM memory to memory map in address range 0-511
+set_memory_map(Pdu, State) ->
+    if Pdu#digiplex_read_resp.address band 16#8000 =:= 16#8000 ->
+	    Addr = Pdu#digiplex_read_resp.address band 16#7fff,
+	    Data = Pdu#digiplex_read_resp.data,
+	    Size = byte_size(Data),
+	    if Addr < (512-32) ->
+		    lager:debug("set memory map, address ~w data=~w",
+				[Addr, Data]),
+		    <<B0:Addr/binary, _:Size/binary, B1/binary>> =
+			State#state.memory_map,
+		    MemoryMap = <<B0/binary, Data/binary, B1/binary>>,
+		    State#state { memory_map = MemoryMap };
+	       true ->
+		    State
+	    end;
+       true ->
+	    State
+    end.
 
 open(State = #state {device = DeviceName,
 		     baud = Baud,
@@ -279,8 +414,7 @@ flush_loop(U) ->
     after 1000 ->
 	    ok
     end.
-	
-		 
+
 init_string() ->
     <<16#5F, 16#20, 16#00, 16#00, 16#00, 16#00, 16#00, 16#00, 
       16#00, 16#00, 16#00, 16#00, 16#00, 16#00, 16#00, 16#00, 

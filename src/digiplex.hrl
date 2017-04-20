@@ -16,12 +16,41 @@
 -define(DIGIPLEX_ZONE_CHANGE,  16#D).
 -define(DIGIPLEX_EVENT,        16#E).
 
+-define(EEPROM(A), ((A) band 16#7fff)).
+-define(RAM(A),    (((A) band 16#7fff) bor 16#8000)).
+
+%% RAM memory map
+%%  *127
+%%   13C - Digiplex 096 zone status base address
+%%  *147
+%%   148 - Digiplex 096 tamper status base address
+%%   153 - 1  .. 8 Digiplex 048 zone status base address
+%%   154 - 9  .. 16
+%%   155 - 17 .. 24
+%%   156 - 25 .. 32
+%%   157 - 33 .. 40
+%%   158 - 41 .. 48
+%%   159 - 1  .. 8 Digiplex 048 tamper status base address
+%%   15A - 9  .. 16
+%%   15B - 17 .. 24
+%%   15C - 25 .. 32
+%%   15D - 33 .. 40
+%%   15E - 41 .. 48
+%%  *167
+%%  
+
 -define(DIGIPLEX_VERSION_1_30, 16#00).
 -define(DIGIPLEX_VERSION_2_00, 16#01).
 -define(DIGIPLEX_VERSION_NE,   16#02).
 
 -define(DIGIPLEX_ENDUSER_TYPE, 16#55).
 
+-define(DIGIPLEX_PRODUCT_ID_DIGIPLEX, 16#00).
+-define(DIGIPLEX_PRODUCT_ID_SPECTRA,  16#10).
+-define(DIGIPLEX_PRODUCT_ID_CONTACT,  16#20).
+
+
+%% req/resp: 0 
 -record(digiplex_init,
 	{ 
 	  address=0, 
@@ -42,34 +71,30 @@
 	  section_data
 	}).
 
--record(digiplex_login,
+%% resp: 1
+-record(digiplex_login_resp,
 	{ 
 	  message_center,
 	  answer,
 	  callback 
 	}).
 
--record(digiplex_speed,
+%% req: 2
+-record(digiplex_speed_req,
 	{
-	  speed=0
+	  speed=0     %% byte code?
 	}).
 
--record(digiplex_read,
+%% resp: 2
+-record(digiplex_speed_resp,
 	{
-	  message_center,
-	  bus_address,
-	  address,
-	  data
+	  message_center,	  
+	  speed=0     %% byte code?
 	}).
-
--record(digiplex_read_command,
-	{
-	  offset,  %% 0 = 16 bytes, 5 bits 
-	  bus_address = 0,  %% 7 bits
-	  address  %% 16#8000 + addr = RAM, 16#0000 +addr = EEPROM
-	}).
-
--record(digiplex_time,
+%% Set panel time (may should be called set_panel_date?)
+%% req: 3 
+%% BCD?
+-record(digiplex_set_panel_time_req, 
 	{
 	  address=0,
 	  century,
@@ -78,6 +103,9 @@
 	  day
 	}).
 
+%% Monitoring command
+%% req: 4
+%%
 -define(DIGIPLEX_NOP,          16#0).
 -define(DIGIPLEX_FULL_ARM,     16#2).
 -define(DIGIPLEX_STAY_ARM,     16#3).
@@ -86,7 +114,7 @@
 -define(DIGIPLEX_DISARM,       16#6).
 -define(DIGIPLEX_BEEP,         16#8).
 
--record(digiplex_monitor,
+-record(digiplex_monitor_req,
 	{
 	  partition1,
 	  partition2,
@@ -98,7 +126,68 @@
 	  partition8
 	}).
 
--record(digiplex_event,
+-record(digiplex_monitor_resp,
+	{
+	  message_center,
+	  partition1,
+	  partition2,
+	  partition3,
+	  partition4,
+	  partition5,
+	  partition6,
+	  partition7,
+	  partition8
+	}).
+%%
+%% req: 5
+%%
+-record(digiplex_read_req,
+	{
+	  count,  %% :5  0..31  0=32 bytes
+	  bus_address = 0,  %% :7 bits
+	  address  %% :16 16#8000 + addr = RAM, 16#0000 +addr = EEPROM
+	}).
+%%
+%% resp: 5
+%%
+-record(digiplex_read_resp,
+	{
+	  message_center,
+	  bus_address,
+	  address,
+	  data
+	}).
+
+%%
+%% req: 6
+%%
+-record(digiplex_write_req,
+	{
+	  count,  %% :5  0..31  0=32 bytes
+	  bus_address = 0,  %% :7 bits
+	  address,  %% :16 16#8000 + addr = RAM, 16#0000 +addr = EEPROM
+	  data :: binary() %% 1..32 bytes
+	}).
+%%
+%% resp: 6
+%%
+-record(digiplex_write_resp,
+	{
+	  message_center,
+	  bus_address,
+	  address
+	}).
+%%
+%% req: E
+%%
+-record(digiplex_event_req,
+	{
+	  event_request_number
+	}).
+%%
+%% resp: E
+%%
+-record(digiplex_event_resp,
 	{
 	  message_center,
 	  event_request_number,
