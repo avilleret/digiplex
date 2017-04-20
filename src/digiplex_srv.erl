@@ -12,9 +12,11 @@
 
 %% API
 -export([start_link/0]).
--export([show_zone_info/0]).
+-export([get_zone_info/0]).
 -export([get_info/0]).
+-export([show_zone_info/0]).
 -export([read_event/1]).
+-compile(export_all).
 
 %% gen_server callbacks
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2,
@@ -61,27 +63,26 @@
 %%%===================================================================
 
 show_zone_info() ->
+    {ok,ZoneInfo} = get_zone_info(),
+    lists:foreach(
+      fun({I,Info}) -> 
+	      io:format("~w: ~w\n", [I, Info]) 
+      end, ZoneInfo).
+
+get_zone_info() ->
     {ok, MemoryMap} = gen_server:call(?SERVER, get_memory_map),
     %% Digiplex 48?
-    <<_:16#152, ZoneBin:6/binary, TamperBin:6/binary,
+    <<_:16#152/binary, ZoneBin:6/binary, TamperBin:6/binary, 
       _/binary>> = MemoryMap,
     ZoneStatus = [I || <<I:1>> <= ZoneBin ],
     TamperStatus = [I || <<I:1>> <= TamperBin ],
-    display_zone_info(1, ZoneStatus, TamperStatus).
-
-display_zone_info(I, [Z|Zs], [T|Ts]) ->
-    if Z =:= 0, T =:= 0 ->
-	    io:format("~2w: OK\n", [I]);
-       Z =:= 0, T =:= 1 ->
-	    io:format("~2w: Tamper\n", [I]);
-       Z =:= 1, T =:= 0 ->
-	    io:format("~2w: Open\n", [I]);
-       Z =:= 1, T =:= 1 ->
-	    io:format("~2w: FireLoop\n", [I])
-    end,
-    display_zone_info(I+1, Zs, Ts);
-display_zone_info(_I, [], []) ->
-    ok.
+    {ok,[{I, case Z*2+T of
+		 0 -> ok;
+		 1 -> tamper;
+		 2 -> open;
+		 3 -> fire_loop
+	     end} || {I,Z,T} <- lists:zip3(lists:seq(1,48),
+					   ZoneStatus,TamperStatus)]}.
 
 get_info() ->
     gen_server:call(?SERVER, get_info).
