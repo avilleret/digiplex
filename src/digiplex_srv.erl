@@ -232,6 +232,7 @@ handle_cast(_Msg, State) ->
 %%--------------------------------------------------------------------
 
 handle_info({uart,U,Data}, State) when U =:= State#state.uart ->
+    lager:debug("got data: ~p", [Data]),    
     case <<(State#state.buf)/binary, Data/binary>> of
 	<<Data1:36/binary, Crc, Buf1/binary>> ->
 	    case digiplex_crc:checksum(Data1) of
