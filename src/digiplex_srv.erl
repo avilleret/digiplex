@@ -90,6 +90,22 @@ get_info() ->
 read_event(N) ->
     gen_server:call(?SERVER, {read_event,N}).
 
+read_ram(Addr, Count) ->
+    case gen_server:call(?SERVER, {read_memory,?RAM(Addr), Count}) of
+	{ok,Pdu} ->
+	    {ok,Pdu#digiplex_read_resp.data};
+	Error ->
+	    Error
+    end.
+
+read_eeprom(Addr, Count) ->
+    case gen_server:call(?SERVER, {read_memory,?EEPROM(Addr), Count}) of
+	{ok,Pdu} ->
+	    {ok,Pdu#digiplex_read_resp.data};
+	Error ->
+	    Error
+    end.
+
 %%--------------------------------------------------------------------
 %% @doc
 %% Starts the server
@@ -174,6 +190,18 @@ handle_call({read_event, N}, From, State) ->
 	    Pos = #digiplex_event_resp.event_request_number,
 	    {noreply, State#state { wait = {digiplex_event_resp,From,{Pos,N}}}}
     end;
+handle_call({read_memory,Addr,Count}, From, State) ->
+    if State#state.state =/= up ->
+	    {reply, {error, not_running}, State};
+       true ->
+	    Pdu = #digiplex_read_req { count=Count,
+				       bus_address=0,
+				       address=Addr },
+	    send_pdu(Pdu, State),
+	    Pos = #digiplex_read_resp.address,
+	    {noreply, State#state { wait = {digiplex_read_resp,From,
+					    {Pos,Addr}}}}
+    end;
 handle_call(_Request, _From, State) ->
     lager:debug("got call ~p", [_Request]),
     {reply, {error,bad_call}, State}.
@@ -208,8 +236,10 @@ handle_info({uart,U,Data}, State) when U =:= State#state.uart ->
 	<<Data1:36/binary, Crc, Buf1/binary>> ->
 	    case digiplex_crc:checksum(Data1) of
 		Crc ->
+		    lager:debug("got message: ~p", [Data1]),
 		    try digiplex_codec:decode_pdu(Data1) of
 			Pdu ->
+			    lager:debug("got pdu: ~p", [Pdu]),
 			    State1 = State#state { buf=Buf1},
 			    State2 = preprocess_pdu(Pdu, State1),
 			    handle_pdu(Pdu, State2)
@@ -269,15 +299,20 @@ code_change(_OldVsn, State, _Extra) ->
 preprocess_pdu(Pdu = #digiplex_init {}, State) ->
     set_info(Pdu, State);
 preprocess_pdu(Pdu=#digiplex_read_resp {}, State) ->
-    set_memory_map(Pdu, State);
-preprocess_pdu(Pdu=#digiplex_error_resp {}, State) ->
+    State1 = set_memory_map(Pdu, State),
+    resp_pdu(Pdu, State1);
+preprocess_pdu(Pdu, State) ->
+    resp_pdu(Pdu, State).
+
+%% check for response pdu
+resp_pdu(Pdu=#digiplex_error_resp {}, State) ->
     case State#state.wait of
 	undefined -> State;
 	{_PduName,From,_Match} ->
 	    gen_server:reply(From, {error, Pdu#digiplex_error_resp.message}),
 	    State#state { wait = undefined }
     end;
-preprocess_pdu(Pdu, State) ->
+resp_pdu(Pdu, State) ->
     case State#state.wait of
 	undefined -> State;
 	{PduName,From,{Pos,Value}} when 
@@ -288,6 +323,7 @@ preprocess_pdu(Pdu, State) ->
 	_ ->
 	    State
     end.
+
 
 handle_pdu(Pdu = #digiplex_init { }, State) when State#state.state =:= init;
 						 State#state.state =:= login ->
