@@ -132,6 +132,10 @@ decode_pdu(<<?DIGIPLEX_WRITE:4,O:4,
 			   bus_address = BusAddress,
 			   address=Address
 			 };
+decode_pdu(<<?DIGIPLEX_ERROR:4,O:4,
+	     Message:8, _/binary>>) ->
+    #digiplex_error_resp { message_center=O,
+			   message = Message };
 decode_pdu(<<?DIGIPLEX_EVENT:4,O:4,
 	     EventRequestNumber : 8,
 	     Century:8, Year:8, Month:8, Day:8,

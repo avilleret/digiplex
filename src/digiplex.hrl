@@ -8,7 +8,7 @@
 -define(DIGIPLEX_MONITOR,      16#4).
 -define(DIGIPLEX_READ,         16#5).  %% upload
 -define(DIGIPLEX_WRITE,        16#6).  %% download
--define(DIGIPLEX_WRONG_ADRESS, 16#7).  %% response only
+-define(DIGIPLEX_ERROR,        16#7).  %% response only
 -define(DIGIPLEX_SAVE_EVENT,   16#8).
 -define(DIGIPLEX_SEND,         16#A).
 -define(DIGIPLEX_BROADCAST,    16#B).
@@ -176,6 +176,20 @@
 	  message_center,
 	  bus_address,
 	  address
+	}).
+
+%%
+%% resp: 7
+%%
+
+-define(ERROR_COMMAND,    16#00).
+-define(ERROR_USER_CODE,  16#01).
+-define(ERROR_PARTITION,  16#02).
+
+-record(digiplex_error_resp,
+	{
+	  message_center,
+	  message
 	}).
 %%
 %% req: E

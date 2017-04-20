@@ -266,18 +266,25 @@ code_change(_OldVsn, State, _Extra) ->
 %%% Internal functions
 %%%===================================================================
 
-preprocess_pdu(Pdu = #digiplex_init { }, State) ->
+preprocess_pdu(Pdu = #digiplex_init {}, State) ->
     set_info(Pdu, State);
 preprocess_pdu(Pdu=#digiplex_read_resp {}, State) ->
     set_memory_map(Pdu, State);
+preprocess_pdu(Pdu=#digiplex_error_resp {}, State) ->
+    case State#state.wait of
+	undefined -> State;
+	{_PduName,From,_Match} ->
+	    gen_server:reply(From, {error, Pdu#digiplex_error_resp.message}),
+	    State#state { wait = undefined }
+    end;
 preprocess_pdu(Pdu, State) ->
-    case wait of
+    case State#state.wait of
 	undefined -> State;
 	{PduName,From,{Pos,Value}} when 
 	      PduName =:= element(1,Pdu),
 	      Value =:= element(Pos,Pdu) ->
 	    gen_server:reply(From, {ok, Pdu}),
-	    State;
+	    State#state { wait = undefined };
 	_ ->
 	    State
     end.
