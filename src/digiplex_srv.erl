@@ -54,7 +54,8 @@
 	  reopen_timer :: undefined | reference(),
 	  uart :: port(),
 	  memory_map :: binary(), %% data from 16#0 .. 16#1ff
-	  wait, %% {pdu_name, From, Data}
+	  sent_pdu,   %% last sent pdu
+	  wait_pdu,   %% {pdu_name, From, Data}
 	  buf=(<<>>)
 	}).
 
@@ -65,8 +66,10 @@
 show_zone_info() ->
     {ok,ZoneInfo} = get_zone_info(),
     lists:foreach(
-      fun({I,Info}) -> 
-	      io:format("~w: ~w\n", [I, Info]) 
+      fun({_I,ok}) -> %% ignore
+	      ok;
+	 ({I,Info}) -> 
+	      io:format("~w: ~w\n", [I, Info])
       end, ZoneInfo).
 
 get_zone_info() ->
@@ -74,8 +77,8 @@ get_zone_info() ->
     %% Digiplex 48?
     <<_:16#152/binary, ZoneBin:6/binary, TamperBin:6/binary, 
       _/binary>> = MemoryMap,
-    ZoneStatus = [I || <<I:1>> <= ZoneBin ],
-    TamperStatus = [I || <<I:1>> <= TamperBin ],
+    ZoneStatus = bit_info(ZoneBin),
+    TamperStatus = bit_info(TamperBin),
     {ok,[{I, case Z*2+T of
 		 0 -> ok;
 		 1 -> tamper;
@@ -83,6 +86,11 @@ get_zone_info() ->
 		 3 -> fire_loop
 	     end} || {I,Z,T} <- lists:zip3(lists:seq(1,48),
 					   ZoneStatus,TamperStatus)]}.
+
+bit_info(<<Byte,Bytes/binary>>) ->
+    lists:reverse([I || <<I:1>> <= <<Byte>>]) ++ bit_info(Bytes);
+bit_info(<<>>) ->
+    [].
 
 get_info() ->
     gen_server:call(?SERVER, get_info).
@@ -186,9 +194,10 @@ handle_call({read_event, N}, From, State) ->
 	    {reply, {error, not_running}, State};
        true ->
 	    Pdu = #digiplex_event_req { event_request_number = N },
-	    send_pdu(Pdu, State),
+	    State1 = send_pdu(Pdu, State),
 	    Pos = #digiplex_event_resp.event_request_number,
-	    {noreply, State#state { wait = {digiplex_event_resp,From,{Pos,N}}}}
+	    Wait = {digiplex_event_resp,From,{Pos,N}},
+	    {noreply, State1#state { wait_pdu = Wait }}
     end;
 handle_call({read_memory,Addr,Count}, From, State) ->
     if State#state.state =/= up ->
@@ -197,10 +206,10 @@ handle_call({read_memory,Addr,Count}, From, State) ->
 	    Pdu = #digiplex_read_req { count=Count,
 				       bus_address=0,
 				       address=Addr },
-	    send_pdu(Pdu, State),
+	    State1 = send_pdu(Pdu, State),
 	    Pos = #digiplex_read_resp.address,
-	    {noreply, State#state { wait = {digiplex_read_resp,From,
-					    {Pos,Addr}}}}
+	    Wait = {digiplex_read_resp,From,{Pos,Addr}},
+	    {noreply, State1#state { wait_pdu = Wait }}
     end;
 handle_call(_Request, _From, State) ->
     lager:debug("got call ~p", [_Request]),
@@ -307,20 +316,20 @@ preprocess_pdu(Pdu, State) ->
 
 %% check for response pdu
 resp_pdu(Pdu=#digiplex_error_resp {}, State) ->
-    case State#state.wait of
+    case State#state.wait_pdu of
 	undefined -> State;
 	{_PduName,From,_Match} ->
 	    gen_server:reply(From, {error, Pdu#digiplex_error_resp.message}),
-	    State#state { wait = undefined }
+	    State#state { wait_pdu = undefined }
     end;
 resp_pdu(Pdu, State) ->
-    case State#state.wait of
+    case State#state.wait_pdu of
 	undefined -> State;
 	{PduName,From,{Pos,Value}} when 
 	      PduName =:= element(1,Pdu),
 	      Value =:= element(Pos,Pdu) ->
 	    gen_server:reply(From, {ok, Pdu}),
-	    State#state { wait = undefined };
+	    State#state { wait_pdu = undefined };
 	_ ->
 	    State
     end.
@@ -336,9 +345,9 @@ handle_pdu(Pdu = #digiplex_init { }, State) when State#state.state =:= init;
        true ->
 	    lager:info("digiplex: logging in",[]),
 	    Pdu1 = Pdu#digiplex_init { password = State#state.password },
-	    send_pdu(Pdu1, State),
-	    {noreply, State#state { state = login,
-				    attempt = State#state.attempt+1 }}
+	    State1 = send_pdu(Pdu1, State),
+	    {noreply, State1#state { state = login,
+				     attempt = State#state.attempt+1 }}
     end;
 handle_pdu(_Pdu=#digiplex_login_resp {}, State)
   when State#state.state =:= login ->
@@ -347,16 +356,16 @@ handle_pdu(_Pdu=#digiplex_login_resp {}, State)
     lager:info("digiplex: read RAM 1",[]),
     Pdu1 = #digiplex_read_req { count=32,bus_address=0,
 				address=?RAM(16#127) },
-    send_pdu(Pdu1, State),
-    {noreply, State#state { state = read1 }};
+    State1 = send_pdu(Pdu1, State),
+    {noreply, State1#state { state = read1 }};
 handle_pdu(_Pdu=#digiplex_read_resp {}, State)
   when State#state.state =:= read1 ->
     %% read from 16#147
     lager:info("digiplex: read RAM 2",[]),
     Pdu1 = #digiplex_read_req { count=32,bus_address=0,
 				address=?RAM(16#147) },
-    send_pdu(Pdu1, State),
-    {noreply, State#state { state = read2 }};
+    State1 = send_pdu(Pdu1, State),
+    {noreply, State1#state { state = read2 }};
 handle_pdu(_Pdu=#digiplex_read_resp {}, State) 
   when State#state.state =:= read2 ->
     lager:debug("data @ 0x147 = ~p", [_Pdu]),
@@ -364,8 +373,8 @@ handle_pdu(_Pdu=#digiplex_read_resp {}, State)
     lager:info("digiplex: read RAM 3",[]),
     Pdu1 = #digiplex_read_req { count=32,bus_address=0,
 				address=?RAM(16#167) },
-    send_pdu(Pdu1, State),
-    {noreply, State#state { state = read3 }};
+    State1 = send_pdu(Pdu1, State),
+    {noreply, State1#state { state = read3 }};
 handle_pdu(_Pdu = #digiplex_read_resp {}, State) 
   when State#state.state =:= read3 ->
     lager:debug("data @ 0x167 = ~p", [_Pdu]),
@@ -380,7 +389,10 @@ send_pdu(Pdu, State) ->
     Data0 = digiplex_codec:encode_pdu(Pdu),
     Data = digiplex_codec:add_checksum(Data0),
     lager:debug("send data = ~p", [Data]),
-    uart:send(State#state.uart, Data).
+    uart:send(State#state.uart, Data),
+    %% fixme: in case of error or crc error retransmit pdu?
+    State#state { sent_pdu = Pdu }.
+
 
 set_info(Pdu, State) ->
     Info = #info { 
