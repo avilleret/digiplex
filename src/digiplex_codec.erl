@@ -72,7 +72,12 @@ encode_pdu(#digiplex_write_req { count=Count,
     <<Data2:Count1,_/binary>> = Data1,
     <<?DIGIPLEX_WRITE:4,
       Count:5, BusAddress:7,  %% Count=32 => Count=0
-      Address:16,Data2/binary>>.
+      Address:16,Data2/binary>>;
+
+encode_pdu(#digiplex_event_resp {
+	      event_request_number = EventRequestNumber
+	     }) ->
+    <<?DIGIPLEX_EVENT:4,0:4, 0:8, EventRequestNumber:16>>.
 
 
 decode_pdu(<<?DIGIPLEX_INIT:4,O:4,
