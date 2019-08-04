@@ -41,11 +41,12 @@
 	  module_serial_number
 	}).
 
--define(MEMMAP_BEGIN, 16#127).
--define(MEMMAP_END,   16#167).
 -define(MEMMAP_SIZE,  512).
-%%-define(MEMMAP_BEGIN, 16#0).
-%%-define(MEMMAP_END,   (?MEMMAP_SIZE-32)).
+-define(MEMMAP_BEGIN, 16#0).
+-define(MEMMAP_END,   (?MEMMAP_SIZE-32)).
+
+%%-define(MEMMAP_BEGIN, 16#127).
+%%-define(MEMMAP_END,   16#167).
 
 -record(state,
 	{
@@ -58,6 +59,8 @@
 	  info        :: #info{},
 	  reopen_ival = infinity :: non_neg_integer(),
 	  reopen_timer :: undefined | reference(),
+	  ping_ival   = 1000,
+	  ping_timer :: undefined | reference(),
 	  uart :: port(),
 	  read_addr,  %% pening read address
 	  memory_map :: binary(), %% RAM map
@@ -69,6 +72,27 @@
 %%%===================================================================
 %%% API
 %%%===================================================================
+
+monitor_zones() ->
+    monitor_zones(20000).
+
+monitor_zones(Time) ->
+    spawn(fun() ->
+		  Timer = erlang:start_timer(Time, self(), stop),
+		  monitor_loop(Timer)
+	  end).
+
+monitor_loop(TRef) ->
+    {ok,MemoryMap} = get_memory_map(),
+    <<_:16#153/binary,ZoneBin:6/binary,TamperBin:6/binary,
+      _/binary>> = MemoryMap,
+    io:format("zone:~w, tamp:~w\n", [ZoneBin,TamperBin]),
+    receive
+	{timeout, TRef, stop} -> stop
+    after
+	1200 -> monitor_loop(TRef)
+    end.
+    
 
 show_zone_info() ->
     {ok,ZoneInfo} = get_zone_info(),
@@ -85,7 +109,7 @@ get_memory_map() ->
 get_zone_info() ->
     {ok, MemoryMap} = get_memory_map(),
     %% Digiplex 48?
-    <<_:16#152/binary, ZoneBin:6/binary, TamperBin:6/binary, 
+    <<_:16#153/binary, ZoneBin:6/binary, TamperBin:6/binary, 
       _/binary>> = MemoryMap,
     ZoneStatus = bit_info(ZoneBin),
     TamperStatus = bit_info(TamperBin),
@@ -284,6 +308,17 @@ handle_info({timeout,TRef,reopen}, State) when
 	{ok, State1} -> {noreply, State1};
 	Error -> {stop, Error, State}
     end;
+
+
+handle_info({timeout,TRef,ping}, State) when
+      State#state.ping_timer =:= TRef ->
+    Ping_ival = State#state.ping_ival,
+    Ping_timer = erlang:start_timer(Ping_ival, self(), ping),
+    Addr = 16#153,
+    Pdu1 = #digiplex_read_req { count=12,bus_address=0,address=?RAM(Addr) },
+    State1 = send_pdu(Pdu1, State#state { ping_timer = Ping_timer }),
+    {noreply, State1};
+
 handle_info(_Info, State) ->
     lager:debug("got info ~p", [_Info]),
     {noreply, State}.
@@ -375,7 +410,9 @@ handle_pdu(_Pdu=#digiplex_read_resp {}, State)
 	       [State#state.read_addr, _Pdu#digiplex_read_resp.data]),
     if State#state.read_addr >= ?MEMMAP_END ->
 	    lager:info("digiplex: up",[]),
-	    {noreply, State#state { state = up }};
+	    Ping_ival = State#state.ping_ival,
+	    Ping_timer = erlang:start_timer(Ping_ival, self(), ping),
+	    {noreply, State#state { state = up, ping_timer = Ping_timer }};
        true ->
 	    Addr = State#state.read_addr + 32, %% Next address
 	    lager:info("digiplex: read RAM addr=~p",[Addr]),
