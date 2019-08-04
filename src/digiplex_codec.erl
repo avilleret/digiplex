@@ -54,7 +54,7 @@ encode_pdu(#digiplex_monitor_req {
 encode_pdu(#digiplex_read_req { count=Count,
 				bus_address=BusAddress,
 				address=Address }) 
-  when Count > 1, Count =< 32 ->
+  when Count >= 1, Count =< 32 ->
     <<?DIGIPLEX_READ:4,
       Count:5, BusAddress:7,  %% Count=32 => Count=0
       Address:16>>;

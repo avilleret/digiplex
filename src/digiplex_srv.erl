@@ -49,7 +49,7 @@
 
 -record(state,
 	{
-	  state       :: undefined | init | login | read | up,
+	  state       :: undefined | init | login | load | read | up,
 	  device      :: string(),
 	  baud        = 19200  :: 19200 | 38400,
 	  %% password: 4 bcd digits (hex, in 0-9 range)
@@ -213,13 +213,14 @@ handle_call({read_memory,Addr,Count}, From, State) ->
     if State#state.state =/= up ->
 	    {reply, {error, not_running}, State};
        true ->
-	    Pdu = #digiplex_read_req { count=Count,
+	    Count1 = min(32, Count),
+	    Pdu = #digiplex_read_req { count=Count1,
 				       bus_address=0,
 				       address=Addr },
 	    State1 = send_pdu(Pdu, State),
 	    Pos = #digiplex_read_resp.address,
 	    Wait = {digiplex_read_resp,From,{Pos,Addr}},
-	    {noreply, State1#state { wait_pdu = Wait }}
+	    {noreply, State1#state { state = read, wait_pdu = Wait }}
     end;
 handle_call(_Request, _From, State) ->
     lager:debug("got call ~p", [_Request]),
@@ -366,10 +367,10 @@ handle_pdu(_Pdu=#digiplex_login_resp {}, State)
     Pdu1 = #digiplex_read_req { count=32,bus_address=0,
 				address=?RAM(Addr) },
     State1 = send_pdu(Pdu1, State),
-    {noreply, State1#state { read_addr=Addr,state = read }};
+    {noreply, State1#state { read_addr=Addr, state = load }};
 
 handle_pdu(_Pdu=#digiplex_read_resp {}, State)
-  when State#state.state =:= read ->
+  when State#state.state =:= load ->
     lager:info("digiplex: DATA at address ~p = ~p",
 	       [State#state.read_addr, _Pdu#digiplex_read_resp.data]),
     if State#state.read_addr >= ?MEMMAP_END ->
@@ -381,8 +382,14 @@ handle_pdu(_Pdu=#digiplex_read_resp {}, State)
 	    Pdu1 = #digiplex_read_req { count=32,bus_address=0,
 					address=?RAM(Addr) },
 	    State1 = send_pdu(Pdu1, State),
-	    {noreply, State1#state { read_addr = Addr, state = read }}
+	    {noreply, State1#state { read_addr = Addr }}
     end;
+
+handle_pdu(_Pdu=#digiplex_read_resp {}, State)
+  when State#state.state =:= read ->
+    lager:info("digiplex: DATA at address ~p = ~p",
+	       [State#state.read_addr, _Pdu#digiplex_read_resp.data]),
+    {noreply, State#state { state = up }};
 
 handle_pdu(Pdu, State) ->
     lager:debug("got pdu ~p\n", [Pdu]),
